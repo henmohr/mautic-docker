@@ -1,0 +1,164 @@
+# Compose com todos serviços necessários para rodar o mautic5
+# Proxy: nginx-proxy
+# Database: mariadb
+# Veja o arquivo .env.example para configurar as variáveis
+
+networks:
+  reverse-proxy:
+    external: true
+    name: reverse-proxy
+  internal:
+    driver: bridge
+  mysql:
+    external: false
+    name: mysql
+  rabbitmq:
+    external: true
+    name: rabbitmq
+  internal-mautic:
+    external: true
+    name: internal-mautic
+
+x-mautic-volumes: &mautic-volumes
+  - ./volumes/mautic:/var/www/html:z
+  - ./volumes/cron:/opt/mautic/cron:z
+  - ./volumes/mautic/docroot:/var/www/html/docroot:z
+
+x-mautic-environments: &mautic-environments
+  #MAUTIC_VERSION: ${MAUTIC_VERSION:-5.x-dev}
+  TZ: ${TZ:-CET}
+  HOST_UID: ${HOST_UID:-1000}
+  HOST_GID: ${HOST_GID:-1000}
+  MAUTIC_DB_HOST: ${MAUTIC_DB_HOST:-mysql}
+  MAUTIC_DB_PORT: ${MAUTIC_DB_PORT:-3306}
+  MAUTIC_DB_USER: ${MAUTIC_DB_USER:-mautic5}
+  MAUTIC_DB_PASSWORD: ${MAUTIC_DB_PASSWORD:-mautic}
+  MAUTIC_DB_NAME: ${MAUTIC_DB_NAME:-mautic5}
+  MAUTIC_RUN_CRON_JOBS: ${MAUTIC_RUN_CRON_JOBS:-true}
+  XDEBUG_CONFIG: ${XDEBUG_CONFIG:-}
+  MAUTIC_MESSENGER_DSN_EMAIL: ${MAUTIC_MESSENGER_DSN_EMAIL:-doctrine://default}
+  MAUTIC_MESSENGER_DSN_HIT: ${MAUTIC_MESSENGER_DSN_HIT:-doctrine://default}
+
+services:
+  nginx-proxy:
+    container_name: nginx-proxy
+    image: nginxproxy/nginx-proxy:alpine
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./volumes/vhost.d/:/etc/nginx/vhost.d
+      - ./volumes/conf.d:/etc/nginx/conf.d
+      - ./volumes/certs:/etc/nginx/certs:ro
+      - ./volumes/html:/usr/share/nginx/html
+    networks:
+      - reverse-proxy
+    environment:
+      - TZ
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 320M
+
+  nginx-proxy-acme:
+    container_name: nginx-proxy-acme
+    image: nginxproxy/acme-companion:latest
+    restart: unless-stopped
+    networks:
+      - reverse-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./volumes/vhost.d/:/etc/nginx/vhost.d
+      - ./volumes/certs:/etc/nginx/certs:rw
+      - ./volumes/html:/usr/share/nginx/html
+      - ./volumes/acme/:/etc/acme.sh
+    environment:
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+      - TZ
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 128M
+
+  mysql:
+    image: mariadb:11.7.2
+    volumes:
+      - ./.docker/mysql/conf:/etc/mysql/conf.d
+      - ./volumes/mysql/dump:/docker-entrypoint-initdb.d
+      - ./volumes/mysql/data:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD
+      - MYSQL_DATABASE=${MAUTIC_DB_NAME:-mautic5}      
+      - MYSQL_USER=${MAUTIC_DB_USER:-mautic5}          
+      - MYSQL_PASSWORD=${MAUTIC_DB_PASSWORD:-mautic} 
+    networks:
+      - mysql
+    restart: always
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mautic_web:
+    image: ${MAUTIC_IMAGE_VERSION}
+    restart: unless-stopped
+    volumes: *mautic-volumes
+    environment:
+      <<: *mautic-environments
+      DOCKER_MAUTIC_LOAD_TEST_DATA: ${DOCKER_MAUTIC_LOAD_TEST_DATA:-false}
+      DOCKER_MAUTIC_RUN_MIGRATIONS: ${DOCKER_MAUTIC_RUN_MIGRATIONS:-false}
+      VIRTUAL_HOST: ${VIRTUAL_HOST}
+      LETSENCRYPT_HOST: ${LETSENCRYPT_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+    healthcheck:
+      test: curl http://localhost
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 100
+    networks:
+      - reverse-proxy
+      - rabbitmq
+      - mysql
+      - internal-mautic
+
+  mautic_cron:
+    image: ${MAUTIC_IMAGE_VERSION}
+    restart: unless-stopped
+    volumes: *mautic-volumes
+    environment:
+      <<: *mautic-environments
+      DOCKER_MAUTIC_ROLE: mautic_cron
+    depends_on:
+      mautic_web:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - rabbitmq
+      - mysql
+      - internal-mautic
+
+  mautic_worker:
+    image: ${MAUTIC_IMAGE_VERSION}
+    restart: unless-stopped
+    volumes: *mautic-volumes
+    environment:
+      <<: *mautic-environments
+      DOCKER_MAUTIC_ROLE: mautic_worker
+    depends_on:
+      mautic_web:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - rabbitmq
+      - mysql
+      - internal-mautic
+
