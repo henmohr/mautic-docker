@@ -33,8 +33,26 @@ jobs:
           platforms: linux/amd64
           build-args: |
             BASE_TAG=8.3-apache-bookworm
-            MAUTIC_VERSION=7.0.0
+            MAUTIC_VERSION=7.2.1
             FLAVOUR=${{ matrix.image_type }}
+
+      - name: Verify compiled GrapesJS assets in the runtime image
+        run: |
+          docker run --rm --entrypoint php mautic-${{ matrix.image_type }} -r '
+            $dir = "/var/www/html/docroot/plugins/GrapesJsBuilderBundle/Assets/library/js/dist/";
+            $manifest = json_decode(file_get_contents($dir . "manifest.json"), true, 512, JSON_THROW_ON_ERROR);
+            foreach (["builder.js", "builder.css"] as $asset) {
+                $file = $manifest[$asset] ?? null;
+                if (!is_string($file) || basename($file) !== $file || !is_file($dir . $file) || filesize($dir . $file) === 0) {
+                    fwrite(STDERR, "Missing or empty GrapesJS asset: " . $asset . PHP_EOL);
+                    exit(1);
+                }
+            }
+          '
+          docker run --rm --entrypoint sh mautic-${{ matrix.image_type }} -c '
+            test ! -d /var/www/html/docroot/plugins/GrapesJsBuilderBundle/node_modules &&
+            test ! -d /var/www/html/docroot/plugins/GrapesJsBuilderBundle/.parcel-cache
+          '
 
       - name: Save image to tar file
         run: docker save mautic-${{ matrix.image_type }} -o image.tar

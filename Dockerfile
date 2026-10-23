@@ -44,6 +44,13 @@ RUN cd /opt && \
     rm -rf /opt/mautic/var/cache/js && \
     find /opt/mautic/node_modules -mindepth 1 -maxdepth 1 -not \( -name 'jquery' -or -name 'vimeo-froogaloop2' \) | xargs rm -rf
 
+# Composer installs the GrapesJS sources without the compiled builder assets.
+# Build them before copying Mautic into the runtime image.
+RUN cd /opt/mautic/docroot/plugins/GrapesJsBuilderBundle && \
+    npm ci --include=dev --no-audit --no-fund && \
+    npm run build && \
+    rm -rf node_modules .parcel-cache
+
 FROM php:${BASE_TAG}
 
 LABEL vendor="Mautic"
