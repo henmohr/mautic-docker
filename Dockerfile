@@ -41,8 +41,7 @@ ARG MAUTIC_VERSION=7.x-dev
 
 RUN cd /opt && \
     COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_PROCESS_TIMEOUT=10000 composer create-project mautic/recommended-project:${MAUTIC_VERSION} mautic --no-interaction && \
-    rm -rf /opt/mautic/var/cache/js && \
-    find /opt/mautic/node_modules -mindepth 1 -maxdepth 1 -not \( -name 'jquery' -or -name 'vimeo-froogaloop2' \) | xargs rm -rf
+    rm -rf /opt/mautic/var/cache/js
 
 # Composer installs the GrapesJS sources without the compiled builder assets.
 # Build them before copying Mautic into the runtime image.
@@ -50,6 +49,13 @@ RUN cd /opt/mautic/docroot/plugins/GrapesJsBuilderBundle && \
     npm ci --include=dev --no-audit --no-fund && \
     npm run build && \
     rm -rf node_modules .parcel-cache
+
+# Generate the core assets while the frontend build dependencies are available.
+# Keep only the libraries needed at runtime when copying to the final image.
+RUN cd /opt/mautic && \
+    npm install && \
+    php bin/console mautic:assets:generate && \
+    find node_modules -mindepth 1 -maxdepth 1 -not \( -name 'jquery' -or -name 'vimeo-froogaloop2' \) | xargs rm -rf
 
 FROM php:${BASE_TAG}
 
@@ -136,15 +142,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && rm /etc/cron.daily/*
 
-# Install Node.JS
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g npm@latest
-
-# Rebuild web assets
+# Clear the cache after moving Mautic to its runtime path.
 RUN cd /var/www/html && \
-    npm install && \
-    php bin/console mautic:assets:generate && \
     php bin/console cache:clear
 
 RUN if [ "$FLAVOUR" = "apache" ]; then \
